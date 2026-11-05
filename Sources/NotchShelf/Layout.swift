@@ -23,3 +23,13 @@ struct ShelfDropGesture {
         moved && (target.insetBy(dx:-4,dy:-4).contains(point) || liveTarget?.insetBy(dx:-4,dy:-4).contains(point) == true)
     }
 }
+
+enum ShelfOrder {
+    static func moving(_ keys:[String], source:String, target:String, after:Bool)->[String] {
+        guard source != target, keys.contains(source), keys.contains(target) else { return keys }
+        var result=keys.filter{$0 != source}
+        guard let index=result.firstIndex(of:target) else { return keys }
+        result.insert(source,at:index+(after ? 1 : 0))
+        return result
+    }
+}

@@ -9,8 +9,88 @@ struct MaterialView: NSViewRepresentable {
     func updateNSView(_ nsView:NSVisualEffectView,context:Context) {}
 }
 
-final class ItemButton: NSButton {
+final class ItemButton: NSButton, NSDraggingSource {
+    static let shelfType=NSPasteboard.PasteboardType("local.eugene.NotchShelf.shelf-order")
+    var itemKey=""
     var onClick: ((Bool)->Void)?
+    var onMove: ((String,String,Bool)->Bool)?
+    var onDragState: ((Bool)->Void)?
+    private var commandDown: NSEvent?
+    private var dragging=false
+    private var insertionAfter: Bool?
+    private var scrollTimer: Timer?
+    override func mouseDown(with event:NSEvent) {
+        guard isEnabled else { return }
+        if event.modifierFlags.contains(.command) { commandDown=event; return }
+        commandDown=nil; super.mouseDown(with:event)
+    }
+    override func mouseDragged(with event:NSEvent) {
+        guard let start=commandDown, !dragging,
+              hypot(event.locationInWindow.x-start.locationInWindow.x,event.locationInWindow.y-start.locationInWindow.y)>=5 else { return }
+        let pasteboard=NSPasteboardItem(); pasteboard.setString(itemKey,forType:Self.shelfType)
+        let item=NSDraggingItem(pasteboardWriter:pasteboard)
+        item.setDraggingFrame(bounds.insetBy(dx:max(0,(bounds.width-30)/2),dy:0),contents:image)
+        dragging=true; onDragState?(true)
+        let session=beginDraggingSession(with:[item],event:start,source:self)
+        session.animatesToStartingPositionsOnCancelOrFail=true
+        let timer=Timer(timeInterval:0.05,repeats:true) { [weak self] _ in self?.scrollAtEdge() }
+        scrollTimer=timer; RunLoop.main.add(timer,forMode:.common)
+    }
+    override func mouseUp(with event:NSEvent) {
+        if commandDown != nil || dragging { commandDown=nil; return }
+        super.mouseUp(with:event)
+    }
+    func draggingSession(_ session:NSDraggingSession, sourceOperationMaskFor context:NSDraggingContext)->NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+    func ignoreModifierKeys(for session:NSDraggingSession)->Bool { true }
+    func draggingSession(_ session:NSDraggingSession, endedAt screenPoint:NSPoint, operation:NSDragOperation) {
+        scrollTimer?.invalidate(); scrollTimer=nil
+        dragging=false; commandDown=nil; insertionAfter=nil; needsDisplay=true
+        onDragState?(false)
+    }
+    private func localSource(_ sender:NSDraggingInfo)->ItemButton? {
+        guard isEnabled, let source=sender.draggingSource as? ItemButton,
+              source !== self, source.window === window,
+              sender.draggingPasteboard.string(forType:Self.shelfType)==source.itemKey else { return nil }
+        return source
+    }
+    override func draggingEntered(_ sender:NSDraggingInfo)->NSDragOperation { draggingUpdated(sender) }
+    override func draggingUpdated(_ sender:NSDraggingInfo)->NSDragOperation {
+        guard localSource(sender) != nil else { insertionAfter=nil; needsDisplay=true; return [] }
+        insertionAfter=convert(sender.draggingLocation,from:nil).x>=bounds.midX
+        needsDisplay=true; return .move
+    }
+    override func draggingExited(_ sender:NSDraggingInfo?) { insertionAfter=nil; needsDisplay=true }
+    override func prepareForDragOperation(_ sender:NSDraggingInfo)->Bool { localSource(sender) != nil }
+    override func performDragOperation(_ sender:NSDraggingInfo)->Bool {
+        guard let source=localSource(sender) else { return false }
+        let after=convert(sender.draggingLocation,from:nil).x>=bounds.midX
+        insertionAfter=nil; needsDisplay=true
+        return onMove?(source.itemKey,itemKey,after) ?? false
+    }
+    override func draw(_ dirtyRect:NSRect) {
+        super.draw(dirtyRect)
+        if let after=insertionAfter {
+            NSColor.controlAccentColor.setFill()
+            NSBezierPath(roundedRect:NSRect(x:after ? bounds.maxX-3 : bounds.minX+1,y:3,width:2,height:max(0,bounds.height-6)),xRadius:1,yRadius:1).fill()
+        }
+    }
+    private func scrollAtEdge() {
+        guard dragging, let window else { return }
+        var parent: NSView?=superview
+        while let current=parent, !(current is NSScrollView) { parent=current.superview }
+        guard let scroll=parent as? NSScrollView, let document=scroll.documentView else { return }
+        let clip=scroll.contentView
+        let point=clip.convert(window.convertPoint(fromScreen:NSEvent.mouseLocation),from:nil)
+        let visible=clip.bounds
+        guard point.y>=visible.minY, point.y<=visible.maxY,
+              point.x>=visible.minX-16, point.x<=visible.maxX+16 else { return }
+        let step:CGFloat=point.x<visible.minX+22 ? -8 : (point.x>visible.maxX-22 ? 8 : 0)
+        guard step != 0 else { return }
+        let x=max(0,min(visible.minX+step,document.bounds.width-visible.width))
+        clip.scroll(to:NSPoint(x:x,y:visible.minY)); scroll.reflectScrolledClipView(clip)
+    }
     override func rightMouseUp(with event:NSEvent) { onClick?(true) }
     @objc func pressed() { onClick?(false) }
     override func resetCursorRects() { addCursorRect(bounds,cursor:.pointingHand) }
@@ -20,14 +100,18 @@ struct MenuItemButton: NSViewRepresentable {
     var image:NSImage
     var enabled:Bool
     var click:(Bool)->Void
+    var move:(String,String,Bool)->Bool
+    var dragState:(Bool)->Void
     func makeNSView(context:Context)->ItemButton {
         let button=ItemButton(); button.isBordered=false; button.imagePosition = .imageOnly
         button.imageScaling = .scaleProportionallyDown; button.target=button; button.action=#selector(ItemButton.pressed)
-        button.setButtonType(.momentaryChange); return button
+        button.setButtonType(.momentaryChange); button.registerForDraggedTypes([ItemButton.shelfType]); return button
     }
     func updateNSView(_ button:ItemButton,context:Context) {
-        button.image=image; button.toolTip=item.name; button.setAccessibilityLabel(item.name)
+        button.image=image; button.itemKey=item.key
+        button.toolTip="\(item.name) · ⌘拖动调整顺序"; button.setAccessibilityLabel(item.name)
         button.isEnabled=enabled; button.onClick=click
+        button.onMove=move; button.onDragState=dragState
     }
 }
 struct ShelfView: View {
@@ -42,10 +126,13 @@ struct ShelfView: View {
                 }.padding(.leading,4)
             } else {
                 ScrollView(.horizontal,showsIndicators:false) {
-                    HStack(spacing:model.spacing) {
+                    HStack(spacing:0) {
                         ForEach(model.shelfItems) { item in
-                            MenuItemButton(item:item,image:model.cache.images[item.id] ?? item.fallbackImage,enabled:!model.busy) { right in model.activate(item,right:right) }
-                                .frame(width:32,height:30)
+                            MenuItemButton(item:item,image:model.cache.images[item.id] ?? item.fallbackImage,enabled:!model.busy,
+                                           click:{right in model.activate(item,right:right)},
+                                           move:{source,target,after in model.moveShelfItem(source,to:target,after:after)},
+                                           dragState:{model.setShelfDragging($0)})
+                                .frame(width:32+model.spacing,height:30)
                         }
                     }
                 }
@@ -150,7 +237,7 @@ struct SettingsView: View {
     var appearanceSettings:some View {
         VStack(alignment:.leading,spacing:22) {
             Text("轻巧横条").font(.headline)
-            Text("外观跟随系统深浅模式；图标多时可横向滚动。图标名称在悬停时显示。")
+            Text("按住 ⌘ 在横条中拖动图标即可排序，松开后自动保存。图标多时可横向滚动，拖到边缘可继续滚动；悬停显示名称。")
                 .font(.system(size:12)).foregroundStyle(.secondary)
             HStack {
                 Text("图标间距"); Slider(value:$model.spacing,in:4...16,step:2); Text("\(Int(model.spacing)) pt").monospacedDigit().frame(width:44)
@@ -176,7 +263,7 @@ struct SettingsView: View {
                 .font(.system(size:12)).foregroundStyle(.secondary)
             Button("归位临时图标") { Task { await model.restoreTemporary() } }
             Divider()
-            Text("折叠栏 0.2.1 · 本地测试版\n菜单栏事件路由参考 Ice，按 GPL-3.0 分发；包含完整源码。")
+            Text("折叠栏 0.3.0 · 本地测试版\n菜单栏事件路由参考 Ice，按 GPL-3.0 分发；包含完整源码。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
         }
     }

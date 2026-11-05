@@ -33,6 +33,7 @@ import Carbon
     var temporary: (id: CGWindowID, neighbor: CGWindowID?, left: Bool, initialWindows: Set<CGWindowID>, pid: pid_t, start: Date)?
     var restoreTask: Task<Void,Never>?
     var refreshInFlight = false
+    var shelfDragging=false
     var dragReceiver: DragToShelf?
     var unsafeEntryReadings = 0
     var entryRepairFailures = 0
@@ -62,7 +63,10 @@ import Carbon
         }
         localMonitor=NSEvent.addLocalMonitorForEvents(matching:[.keyDown,.leftMouseDown,.rightMouseDown]) { [weak self] event in
             guard let self else { return event }
-            if event.type == .keyDown, event.keyCode == 53 { self.panel?.orderOut(nil); return nil }
+            if event.type == .keyDown, event.keyCode == 53 {
+                if self.shelfDragging { return event }
+                self.panel?.orderOut(nil); return nil
+            }
             if self.closeOutside, event.type != .keyDown, event.window !== self.panel { self.panel?.orderOut(nil) }
             return event
         }
@@ -106,13 +110,13 @@ import Carbon
         return await Task.detached(priority:.userInitiated) { AXInventory.scan(visibleAreas:areas) }.value
     }
     func refresh() async {
-        guard !refreshInFlight, !busy else { return }
+        guard !refreshInFlight, !busy, !shelfDragging else { return }
         refreshInFlight=true; defer { refreshInFlight=false }
         accessibility=AXIsProcessTrusted(); capture=CGPreflightScreenCaptureAccess()
         if accessibility { dragReceiver?.start() }
         if accessibility {
             let scanned=await scanInventory()
-            guard !busy else { return }
+            guard !busy, !shelfDragging else { return }
             if !scanned.isEmpty { WindowServer.accessibilityItems=scanned }
             if ProcessInfo.processInfo.arguments.contains("--diagnostics") {
                 for i in scanned { NSLog("ShelfDiagnostic %@ %@ id=%u window=%u pid=%d host=%d frame=%@",i.appName,i.identifier,i.id,i.actualWindowID ?? 0,i.pid,i.hostPID ?? 0,NSStringFromRect(i.frame)) }
@@ -194,6 +198,7 @@ import Carbon
         Task { @MainActor in await refresh(); redrawPanel() }
     }
     func showPanel() {
+        guard !shelfDragging else { return }
         guard let screen=entry.button?.window?.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let screenTop=NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
         let anchor: CGRect
@@ -270,6 +275,22 @@ import Carbon
         guard let index=keys.firstIndex(of:item.key), keys.indices.contains(index+delta) else { return }
         keys.swapAt(index,index+delta); orderedKeys=keys; UserDefaults.standard.set(keys,forKey:"orderedKeys")
         objectWillChange.send(); redrawPanel()
+    }
+    func setShelfDragging(_ value:Bool) {
+        shelfDragging=value
+        if !value { Task { @MainActor in await refresh() } }
+    }
+    func moveShelfItem(_ source:String, to target:String, after:Bool)->Bool {
+        guard !busy else { return false }
+        let keys=shelfItems.map(\.key)
+        guard keys.contains(source), keys.contains(target) else { return false }
+        let updated=ShelfOrder.moving(keys,source:source,target:target,after:after)
+        guard updated != keys else { return true }
+        objectWillChange.send()
+        orderedKeys=updated+orderedKeys.filter{!keys.contains($0)}
+        UserDefaults.standard.set(orderedKeys,forKey:"orderedKeys")
+        message="已保存横条顺序。按住 ⌘ 拖动图标可继续调整。"
+        return true
     }
     func activate(_ item: BarItem, right: Bool) {
         guard !busy else { return }
