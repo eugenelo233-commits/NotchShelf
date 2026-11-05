@@ -31,4 +31,15 @@ check(drop.accepts(CGPoint(x:1299,y:16),liveTarget:shifted),"系统重排后原�
 var shortDrag=ShelfDropGesture(start:CGPoint(x:1298,y:16),target:CGRect(x:1284,y:4,width:30,height:24))
 shortDrag.update(CGPoint(x:1300,y:16))
 check(!shortDrag.accepts(CGPoint(x:1300,y:16)),"鼠标轻微抖动不算拖拽")
+let order=["A","B","C","D"]
+check(ShelfOrder.moving(order,source:"A",target:"C",after:true)==["B","C","A","D"],"向右拖动插入目标图标之后")
+check(ShelfOrder.moving(order,source:"D",target:"B",after:false)==["A","D","B","C"],"向左拖动插入目标图标之前")
+check(ShelfOrder.moving(order,source:"D",target:"A",after:false)==["D","A","B","C"],"允许移动到最前")
+check(ShelfOrder.moving(order,source:"A",target:"D",after:true)==["B","C","D","A"],"允许移动到最后")
+check(ShelfOrder.moving(order,source:"B",target:"B",after:true)==order,"放回自身不改变顺序")
+check(ShelfOrder.moving(order,source:"X",target:"B",after:true)==order,"失效来源不能插入新图标")
+check(ShelfOrder.moving(order,source:"B",target:"X",after:false)==order,"失效目标不删除图标")
+var repeated=order
+for i in 0..<100 { repeated=ShelfOrder.moving(repeated,source:order[i%4],target:order[(i+1)%4],after:i%2==0) }
+check(repeated.count==order.count && Set(repeated)==Set(order),"连续来回排序不会丢失或重复图标")
 print("\(count) checks passed")
