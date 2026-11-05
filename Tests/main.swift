@@ -42,4 +42,14 @@ check(ShelfOrder.moving(order,source:"B",target:"X",after:false)==order,"失效�
 var repeated=order
 for i in 0..<100 { repeated=ShelfOrder.moving(repeated,source:order[i%4],target:order[(i+1)%4],after:i%2==0) }
 check(repeated.count==order.count && Set(repeated)==Set(order),"连续来回排序不会丢失或重复图标")
+let expandedDivider=CGRect(x:1000,y:4.5,width:14,height:24)
+check(!Layout.isFolded(CGRect(x:-1,y:981,width:40,height:24),of:expandedDivider,hasWindow:false),"系统禁用的占位图标不会误列为已收纳")
+check(Layout.isFolded(CGRect(x:-4400,y:4.5,width:40,height:24),of:expandedDivider,hasWindow:true),"有效隐藏窗口仍可收纳")
+check(!Layout.isFolded(CGRect(x:700,y:-1077,width:40,height:24),of:expandedDivider,hasWindow:true),"其他屏幕图标不会误列为本屏收纳")
+check(!Layout.isFolded(CGRect(x:1200,y:4.5,width:40,height:24),of:expandedDivider,hasWindow:true),"恢复至右侧后离开收纳分组")
+let mainDisplay=CGRect(x:0,y:0,width:1512,height:982)
+check(Layout.itemFitsMenuBar(CGRect(x:1245,y:0,width:42,height:33),display:mainDisplay,minimumX:848),"33pt 刘海菜单栏窗口不误报空间不足")
+check(!Layout.itemFitsMenuBar(CGRect(x:-4100,y:0,width:42,height:33),display:mainDisplay,minimumX:848),"屏幕外的折叠图标不能直接点击")
+check(!Layout.itemFitsMenuBar(CGRect(x:820,y:0,width:42,height:33),display:mainDisplay,minimumX:848),"跨越刘海边缘的图标不能直接点击")
+check(Layout.itemFitsMenuBar(CGRect(x:-1700,y:-1080,width:42,height:30),display:CGRect(x:-1920,y:-1080,width:1920,height:1080),minimumX:-1920),"负坐标显示器的有效菜单栏可点击")
 print("\(count) checks passed")
