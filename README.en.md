@@ -2,17 +2,18 @@
 
 [简体中文](README.md) · **English**
 
-[Download beta](https://github.com/eugenelo233-commits/NotchShelf/releases/tag/v0.2.1) · [Report an issue](https://github.com/eugenelo233-commits/NotchShelf/issues) · [Changelog](CHANGELOG.md)
+[Download beta](https://github.com/eugenelo233-commits/NotchShelf/releases/tag/v0.3.0) · [Report an issue](https://github.com/eugenelo233-commits/NotchShelf/issues) · [Changelog](CHANGELOG.md)
 
 A compact, native menu bar organizer for MacBooks with a notch. Collect less-used icons in a horizontal shelf and open their original menus when you need them.
 
-**v0.2.1 is an early public beta.** It is not Developer ID signed or notarized by Apple.
+**v0.3.0 is an early public beta.** It is not Developer ID signed or notarized by Apple.
 
 ## What it does
 
 - **Drag to collect:** hold Command and drag a third-party menu bar icon onto the double-chevron entry.
 - **Click to use:** open the shelf and access the app’s original menu.
-- **Make it yours:** choose persistent or collected icons, reorder the shelf, and adjust spacing.
+- **Drag to reorder:** hold Command inside the open shelf and drag an icon; the order is saved on drop.
+- **Make it yours:** choose persistent or collected icons and adjust spacing.
 - **Stay local:** Swift, AppKit and SwiftUI. No account, telemetry, uploads or external package dependencies.
 
 ![NotchShelf running on macOS](preview.png)
@@ -21,7 +22,7 @@ A compact, native menu bar organizer for MacBooks with a notch. Collect less-use
 
 ## Download and install
 
-Download `NotchShelf-0.2.1-macOS-arm64.zip` from [Releases](https://github.com/eugenelo233-commits/NotchShelf/releases/tag/v0.2.1). Extract it, move `折叠栏.app` to Applications, and open it.
+Download `NotchShelf-0.3.0-macOS-arm64.zip` from [Releases](https://github.com/eugenelo233-commits/NotchShelf/releases/tag/v0.3.0). Extract it, move `折叠栏.app` to Applications, and open it.
 
 - The supplied binary is for **Apple Silicon (M-series) Macs**.
 - The deployment target is macOS 14; the current hardware test environment is macOS 26.4. Other versions still need testing.
@@ -33,7 +34,7 @@ Download `NotchShelf-0.2.1-macOS-arm64.zip` from [Releases](https://github.com/e
 1. Enable **折叠栏** under System Settings → Privacy & Security → Accessibility.
 2. Hold **Command (⌘)** and drag a third-party menu bar icon onto the double-chevron entry.
 3. When the collect hint appears, release the mouse button and Command. The app collects the icon and opens the shelf.
-4. Click the double chevron whenever you need the shelf. Settings also provides group selection, ordering and spacing.
+4. **Hold Command and drag icons inside the open shelf to reorder them.** Drop on the left or right side of another icon to insert before or after it. The order is saved and retained when reopening the shelf. Drag near an edge to scroll; Escape or dropping outside cancels. Settings also provides group selection, ordering and spacing.
 5. Right-click the entry for Settings, expand all, restore temporarily moved icons, or quit. Quitting removes the hiding separator.
 
 The menu bar briefly expands while an icon is moved, then returns to its collapsed state. If the entry falls outside the unobstructed area to the right of the notch, the app attempts to move its own entry back into view.
@@ -47,6 +48,8 @@ The app interface is currently in Simplified Chinese. An English interface is no
 **Screen Recording is optional**, for capturing the original status-item artwork. Without it, app icons are used instead. Captured images stay in memory.
 
 There is no account, network service, telemetry or upload. Preferences and window-to-app identity records stay on the Mac. Developer mode (`--diagnostics`) writes app names, window IDs and coordinates to standard error. Review logs and screenshots before sharing them.
+
+User testing confirmed Command-drag reordering and retention after closing and reopening the shelf. Edge scrolling, Escape cancellation and retention across a process restart still need separate hands-on testing.
 
 ## Known limitations
 
@@ -66,7 +69,7 @@ bash test.sh
 bash build.sh ./dist
 ```
 
-`test.sh` runs 16 layout and drag-boundary checks and builds the Debug target. `build.sh` creates an ad-hoc signed Release app for the host architecture. Intel builds are unverified.
+`test.sh` runs 24 layout, drag-boundary and reordering checks and builds the Debug target. `build.sh` creates an ad-hoc signed Release app for the host architecture. Intel builds are unverified.
 
 Source: `Sources/NotchShelf/`. Version metadata: `Info.plist`.
 

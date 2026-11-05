@@ -2,13 +2,13 @@
 
 **简体中文** · [English](README.en.md)
 
-[下载公测版](https://github.com/eugenelo233-commits/NotchShelf/releases/tag/v0.2.1) · [反馈问题](https://github.com/eugenelo233-commits/NotchShelf/issues) · [更新记录](CHANGELOG.md)
+[下载公测版](https://github.com/eugenelo233-commits/NotchShelf/releases/tag/v0.3.0) · [反馈问题](https://github.com/eugenelo233-commits/NotchShelf/issues) · [更新记录](CHANGELOG.md)
 
 为 MacBook 刘海屏设计的轻巧菜单栏收纳工具。点击双下箭头展开横条，在横条中打开软件原生菜单。
 
 A lightweight native macOS menu bar organizer with a compact horizontal shelf, double-chevron entry, and Command-drag to collect icons.
 
-**当前版本：v0.2.1 公测版。** 面向愿意反馈问题的早期用户，尚未经过 Apple Developer ID 签名与公证。
+**当前版本：v0.3.0 公测版。** 面向愿意反馈问题的早期用户，尚未经过 Apple Developer ID 签名与公证。
 
 ## 为什么做这个工具
 
@@ -16,7 +16,8 @@ A lightweight native macOS menu bar organizer with a compact horizontal shelf, d
 
 - **拖进去**：按住 ⌘，将图标拖到双下箭头入口。
 - **点开用**：横条集中显示已收纳图标，支持打开原生菜单。
-- **自己安排**：选择常驻或收纳，调整横条顺序与间距。
+- **拖动排序**：在展开的横条内按住 ⌘ 拖动图标，松开自动保存顺序。
+- **自己安排**：选择常驻或收纳，调整横条间距。
 - **本机运行**：原生 Swift / AppKit / SwiftUI，无账号、无上传。
 
 ![折叠栏实际运行截图](preview.png)
@@ -25,7 +26,7 @@ A lightweight native macOS menu bar organizer with a compact horizontal shelf, d
 
 ## 下载与安装
 
-从 [Releases](https://github.com/eugenelo233-commits/NotchShelf/releases) 下载 `NotchShelf-0.2.1-macOS-arm64.zip`，解压后将 `折叠栏.app` 放入“应用程序”并打开。
+从 [Releases](https://github.com/eugenelo233-commits/NotchShelf/releases) 下载 `NotchShelf-0.3.0-macOS-arm64.zip`，解压后将 `折叠栏.app` 放入“应用程序”并打开。
 
 - 发布的二进制适用于 **Apple Silicon（M 系列）Mac**。
 - 最低编译目标为 macOS 14，当前实机验证环境为 macOS 26.4；其他版本仍需测试。
@@ -37,7 +38,7 @@ A lightweight native macOS menu bar organizer with a compact horizontal shelf, d
 1. 在“系统设置 → 隐私与安全性 → 辅助功能”中开启“折叠栏”。
 2. **按住 ⌘，把第三方菜单栏图标拖到双下箭头上。** 出现“松开以收纳”后，松开鼠标和 ⌘。
 3. 图标移入收纳区，横条展示结果。后续点击双下箭头即可打开横条。
-4. 也可在设置中切换“收纳栏内 / 菜单栏常驻”，调整横条排序和间距。
+4. **横条内按住 ⌘ 拖动图标即可排序。** 放到另一图标左侧或右侧，松开自动保存；关闭重开保留顺序。拖到边缘可自动滚动，按 Escape 或拖出横条取消。设置中仍可调整分组、排序与间距。
 5. 入口右键菜单提供展开全部、设置、临时图标归位和退出。退出会移除折叠分隔线。
 
 收纳时菜单栏会短暂展开以完成图标移动，再恢复折叠。菜单栏拥挤导致入口不可见时，应用尝试将自己的入口移到刘海右侧。
@@ -48,6 +49,8 @@ A lightweight native macOS menu bar organizer with a compact horizontal shelf, d
 - **屏幕录制（可选）**：仅用于采集原始菜单栏图案。未授权时使用应用自身图标；采集结果只保存在内存中。
 - 无账号、无网络服务、无遥测或上传。偏好及非标准图标的窗口身份记录保存在本机。
 - `--diagnostics` 开发模式会向标准错误输出应用名称、窗口编号和坐标。反馈问题前请检查日志与截图，移除个人信息。
+
+实测确认：⌘ 拖动排序和关闭重开后保留顺序。边缘自动滚动、Escape 取消及进程重启后恢复仍待单独实测。
 
 ## 当前限制
 
@@ -67,7 +70,7 @@ bash test.sh
 bash build.sh ./dist
 ```
 
-`test.sh` 运行 16 项布局与拖拽边界检查，并构建 Debug 版本。`build.sh` 构建当前主机架构的 Release 应用并进行本地签名。Intel 构建未验证。
+`test.sh` 运行 24 项布局、拖拽边界与排序检查，并构建 Debug 版本。`build.sh` 构建当前主机架构的 Release 应用并进行本地签名。Intel 构建未验证。
 
 核心路径：`Sources/NotchShelf/`。版本号：`Info.plist`。
 
