@@ -25,12 +25,22 @@ import Carbon
     @Published var autoFold = UserDefaults.standard.object(forKey:"autoFold") as? Bool ?? false {
         didSet { UserDefaults.standard.set(autoFold,forKey:"autoFold") }
     }
+    @Published var dragRequiresCommand = UserDefaults.standard.object(forKey:"dragRequiresCommand") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(dragRequiresCommand,forKey:"dragRequiresCommand") }
+    }
+    @Published var iconStyle = UserDefaults.standard.string(forKey:"iconStyle") ?? "monochrome" {
+        didSet { UserDefaults.standard.set(iconStyle,forKey:"iconStyle") }
+    }
+    private var monochromeIcons:[String:(NSImage,NSImage)]=[:]
+    var shelfMenuOpen=false
+    private var menuBarDropPanel:NSPanel?
+    private var pendingRestore:Task<Void,Never>?
     let cache = IconCache()
     var entry: NSStatusItem!, divider: NSStatusItem!
     var panel: ShelfPanel?, settingsWindow: NSWindow?
     var monitor: Any?, localMonitor: Any?, timer: Timer?
     var hotkey: EventHotKeyRef?, hotkeyHandler: EventHandlerRef?
-    var temporary: (id: CGWindowID, neighbor: CGWindowID?, left: Bool, initialWindows: Set<CGWindowID>, pid: pid_t, start: Date)?
+    var temporary: (id: CGWindowID, neighbor: CGWindowID?, left: Bool, hidden:Bool, initialWindows: Set<CGWindowID>, pid: pid_t, start: Date)?
     var restoreTask: Task<Void,Never>?
     var refreshInFlight = false
     var shelfDragging=false
@@ -59,15 +69,15 @@ import Carbon
         divider.button?.title="│"; divider.button?.toolTip="按住 ⌘ 拖动：左侧收纳，右侧常驻"
         divider.button?.target=self; divider.button?.action=#selector(dividerClicked)
         monitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDown,.rightMouseDown]) { [weak self] _ in
-            Task { @MainActor in if self?.closeOutside == true { self?.panel?.orderOut(nil) } }
+            Task { @MainActor in if self?.closeOutside == true, self?.shelfMenuOpen != true, self?.shelfDragging != true { self?.panel?.orderOut(nil) } }
         }
         localMonitor=NSEvent.addLocalMonitorForEvents(matching:[.keyDown,.leftMouseDown,.rightMouseDown]) { [weak self] event in
             guard let self else { return event }
             if event.type == .keyDown, event.keyCode == 53 {
-                if self.shelfDragging { return event }
+                if self.shelfDragging || self.shelfMenuOpen { return event }
                 self.panel?.orderOut(nil); return nil
             }
-            if self.closeOutside, event.type != .keyDown, event.window !== self.panel { self.panel?.orderOut(nil) }
+            if self.closeOutside, !self.shelfMenuOpen, !self.shelfDragging, event.type != .keyDown, event.window !== self.panel { self.panel?.orderOut(nil) }
             return event
         }
         updateHotkey()
@@ -110,13 +120,13 @@ import Carbon
         return await Task.detached(priority:.userInitiated) { AXInventory.scan(visibleAreas:areas) }.value
     }
     func refresh() async {
-        guard !refreshInFlight, !busy, !shelfDragging else { return }
+        guard !refreshInFlight, !busy, !shelfDragging, !shelfMenuOpen else { return }
         refreshInFlight=true; defer { refreshInFlight=false }
         accessibility=AXIsProcessTrusted(); capture=CGPreflightScreenCaptureAccess()
         if accessibility { dragReceiver?.start() }
         if accessibility {
             let scanned=await scanInventory()
-            guard !busy, !shelfDragging else { return }
+            guard !busy, !shelfDragging, !shelfMenuOpen else { return }
             if !scanned.isEmpty { WindowServer.accessibilityItems=scanned }
             if ProcessInfo.processInfo.arguments.contains("--diagnostics") {
                 for i in scanned { NSLog("ShelfDiagnostic %@ %@ id=%u window=%u pid=%d host=%d frame=%@",i.appName,i.identifier,i.id,i.actualWindowID ?? 0,i.pid,i.hostPID ?? 0,NSStringFromRect(i.frame)) }
@@ -126,8 +136,8 @@ import Carbon
         if let dividerItem=dividerItem() {
             // Only manage the display containing our separator. Other screens have
             // independent coordinates and may have mirrored status-item windows.
-            items=found.filter { abs($0.frame.midY - dividerItem.frame.midY) < 4 || $0.frame.minX == -1 }
-            foldedIDs=Set(items.filter { $0.frame.minX == -1 || Layout.isLeft($0.frame,of:dividerItem.frame) }.map(\.id))
+            items=found.filter { abs($0.frame.midY - dividerItem.frame.midY) < 4 || $0.actualWindowID == nil }
+            foldedIDs=Set(items.filter { Layout.isFolded($0.frame,of:dividerItem.frame,hasWindow:$0.actualWindowID != nil) }.map(\.id))
         } else { items=found; foldedIDs=[] }
         if let temporary { foldedIDs.insert(temporary.id) }
         if capture && (panel?.isVisible == true || settingsWindow?.isVisible == true) { await cache.update(shelfItems); iconRevision += 1 }
@@ -136,7 +146,7 @@ import Carbon
     // A status item can exist while being covered by the notch. Test the whole
     // button against the unobstructed right-hand menu-bar area, not just screen bounds.
     func ensureEntryVisible() async {
-        guard accessibility, !busy, temporary == nil, dragReceiver?.isActive != true, let item=entryItem() else { return }
+        guard accessibility, !busy, !shelfDragging, !shelfMenuOpen, temporary == nil, dragReceiver?.isActive != true, let item=entryItem() else { return }
         let screen=NSScreen.screens.first { screen in
             let id=(screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
             return CGDisplayBounds(id).contains(CGPoint(x:item.frame.midX,y:item.frame.midY))
@@ -198,7 +208,7 @@ import Carbon
         Task { @MainActor in await refresh(); redrawPanel() }
     }
     func showPanel() {
-        guard !shelfDragging else { return }
+        guard !shelfDragging, !shelfMenuOpen else { return }
         guard let screen=entry.button?.window?.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
         let screenTop=NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
         let anchor: CGRect
@@ -209,7 +219,7 @@ import Carbon
         }
         if panel == nil { panel=ShelfPanel(contentRect:.zero,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false) }
         let width=min(CGFloat(max(1,shelfItems.count)) * (32 + spacing) + 64, min(640,screen.visibleFrame.width-24))
-        let height: CGFloat=shelfItems.isEmpty ? 94 : 56
+        let height: CGFloat=shelfItems.isEmpty ? 94 : (error == nil ? 56 : 94)
         let size=CGSize(width:shelfItems.isEmpty ? min(360,screen.visibleFrame.width-24) : width,height:height)
         let origin=Layout.panelOrigin(anchor:anchor,size:size,visible:screen.visibleFrame,top:anchor.minY)
         panel?.setFrame(CGRect(origin:origin,size:size),display:true)
@@ -221,7 +231,7 @@ import Carbon
     /// A collapsed separator extends thousands of points offscreen. macOS will
     /// not accept an actual drop at its left edge, so expand only during the move.
     /// Callers hold busy throughout this transaction to prevent overlapping work.
-    func moveItemToGroup(_ id: CGWindowID, hidden: Bool) async throws {
+    func moveItemToGroup(_ id: CGWindowID, hidden: Bool, visibleRestore:Bool=false) async throws {
         let wasCollapsed=collapsed
         if wasCollapsed { divider.length=12; divider.button?.title="│" }
         defer {
@@ -232,7 +242,7 @@ import Carbon
             let fresh=await scanInventory()
             if !fresh.isEmpty { WindowServer.accessibilityItems=fresh }
         }
-        guard let current=WindowServer.item(id), let target=dividerItem() else { throw ShelfError.missingItem }
+        guard let current=WindowServer.item(id), let target=visibleRestore ? entryItem() : dividerItem() else { throw ShelfError.missingItem }
         if ProcessInfo.processInfo.arguments.contains("--diagnostics") { NSLog("ShelfGroupMove %@ expanded=%d source=%@ target=%@",current.appName,wasCollapsed ? 1 : 0,NSStringFromRect(current.frame),NSStringFromRect(target.frame)) }
         try await ItemEvents.move(current,nextTo:target,left:hidden)
     }
@@ -278,7 +288,84 @@ import Carbon
     }
     func setShelfDragging(_ value:Bool) {
         shelfDragging=value
-        if !value { Task { @MainActor in await refresh() } }
+        if value { showMenuBarDropTarget() }
+        else {
+            menuBarDropPanel?.orderOut(nil); menuBarDropPanel=nil
+            Task { @MainActor in await refresh() }
+        }
+    }
+    func shelfImage(_ item:BarItem)->NSImage {
+        let source=iconStyle == "color" ? item.fallbackImage : (cache.images[item.id] ?? item.fallbackImage)
+        guard iconStyle != "color" else { return source }
+        if let cached=monochromeIcons[item.key], cached.0 === source { return cached.1 }
+        let image=ShelfIconRenderer.monochrome(source)
+        monochromeIcons[item.key]=(source,image)
+        return image
+    }
+    func canRestoreToMenuBar(_ item:BarItem)->Bool {
+        !item.protected && item.actualWindowID != nil && accessibility
+    }
+    /// Cocoa screen coordinates; the overlay never covers the notch or app menus.
+    func menuBarDropFrame()->CGRect? {
+        guard let screen=entry.button?.window?.screen else { return nil }
+        let top=screen.auxiliaryTopRightArea ?? CGRect(x:screen.frame.midX,y:screen.frame.maxY-NSStatusBar.system.thickness,
+                                                      width:screen.frame.width/2,height:NSStatusBar.system.thickness)
+        return top
+    }
+    private func showMenuBarDropTarget() {
+        guard let frame=menuBarDropFrame() else { return }
+        let window=NSPanel(contentRect:frame,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+        window.isOpaque=false; window.backgroundColor = .clear; window.hasShadow=false
+        window.level=NSWindow.Level(rawValue:NSWindow.Level.statusBar.rawValue+1)
+        window.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]; window.hidesOnDeactivate=false
+        let view=MenuBarDropView(frame:CGRect(origin:.zero,size:frame.size))
+        view.accepts={ [weak self] key in
+            guard let self, self.shelfDragging, !self.busy,
+                  let item=self.shelfItems.first(where:{$0.key==key}) else { return false }
+            return self.canRestoreToMenuBar(item)
+        }
+        view.restore={ [weak self] key in self?.restoreToMenuBar(key) }
+        window.contentView=view; menuBarDropPanel=window; window.orderFrontRegardless()
+    }
+    func restoreToMenuBar(_ key:String) {
+        if ProcessInfo.processInfo.arguments.contains("--diagnostics") { NSLog("ShelfRestore request key=%@",key) }
+        guard !busy, pendingRestore == nil,
+              let item=shelfItems.first(where:{$0.key==key}), canRestoreToMenuBar(item) else { return }
+        error=nil; busy=true; message="松开鼠标和 ⌘ 后，恢复 \(item.appName) 到菜单栏。"
+        pendingRestore=Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.pendingRestore=nil }
+            do {
+                // AppKit completes its drag before we move the actual status item.
+                var released=false
+                for _ in 0..<100 {
+                    try await Task.sleep(nanoseconds:100_000_000)
+                    if !self.shelfDragging, !CGEventSource.buttonState(.combinedSessionState,button:.left),
+                       NSEvent.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty { released=true; break }
+                }
+                guard released else { throw ShelfError.busy }
+                if let temporary=self.temporary, temporary.id != item.id { throw ShelfError.busy }
+                try await self.moveItemToGroup(item.id,hidden:false,visibleRestore:true)
+                if self.temporary?.id==item.id { self.restoreTask?.cancel(); self.temporary=nil }
+                try await Task.sleep(nanoseconds:300_000_000)
+                self.busy=false
+                while self.refreshInFlight { try await Task.sleep(nanoseconds:50_000_000) }
+                await self.refresh()
+                guard let current=WindowServer.item(item.id), !self.foldedIDs.contains(item.id),
+                      let area=self.menuBarDropFrame() else { throw ShelfError.moveFailed }
+                let top=NSScreen.screens.first?.frame.maxY ?? 0
+                let cocoaFrame=CGRect(x:current.frame.minX,y:top-current.frame.maxY,width:current.frame.width,height:current.frame.height)
+                guard area.contains(cocoaFrame) else { throw ShelfError.noSpace }
+                self.message="已将 \(item.appName) 恢复到菜单栏。"
+                if ProcessInfo.processInfo.arguments.contains("--diagnostics") { NSLog("ShelfRestore success %@ frame=%@",item.appName,NSStringFromRect(current.frame)) }
+            } catch {
+                self.busy=false
+                self.error="未能恢复 \(item.appName)：\(error.localizedDescription)"
+                if ProcessInfo.processInfo.arguments.contains("--diagnostics") { NSLog("ShelfRestore failed %@: %@",item.appName,error.localizedDescription) }
+                await self.refresh()
+            }
+            self.redrawPanel()
+        }
     }
     func moveShelfItem(_ source:String, to target:String, after:Bool)->Bool {
         guard !busy else { return false }
@@ -289,10 +376,11 @@ import Carbon
         objectWillChange.send()
         orderedKeys=updated+orderedKeys.filter{!keys.contains($0)}
         UserDefaults.standard.set(orderedKeys,forKey:"orderedKeys")
-        message="已保存横条顺序。按住 ⌘ 拖动图标可继续调整。"
+        message="已保存横条顺序。\(dragRequiresCommand ? "按住 ⌘ 拖动" : "拖动")图标可继续调整。"
         return true
     }
     func activate(_ item: BarItem, right: Bool) {
+        if ProcessInfo.processInfo.arguments.contains("--diagnostics") { NSLog("ShelfActivate %@ right=%d frame=%@",item.appName,right ? 1 : 0,NSStringFromRect(item.frame)) }
         guard !busy else { return }
         panel?.orderOut(nil)
         Task { @MainActor in
@@ -301,28 +389,26 @@ import Carbon
             busy=true; error=nil
             do {
                 guard let current=WindowServer.item(item.id), let screen=entry.button?.window?.screen ?? NSScreen.main else { throw ShelfError.missingItem }
+                guard current.actualWindowID != nil else { throw ShelfError.unavailableWindow }
                 let bounds=CGDisplayBounds((screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID())
                 let rightArea=screen.auxiliaryTopRightArea
                 let safeMin=rightArea.map { $0.minX } ?? bounds.minX+200
                 if current.frame.minX != -1 && (current.frame.minX < safeMin || !current.onScreen || foldedIDs.contains(item.id)) {
-                    guard let target=WindowServer.items(includeOwn:true).first(where:{ $0.id != item.id && $0.actualWindowID != nil && $0.frame.minX-current.frame.width-12>safeMin && abs($0.frame.midY-current.frame.midY)<4 }) else { throw ShelfError.noSpace }
                     let order=WindowServer.items(includeOwn:true).filter { abs($0.frame.midY-current.frame.midY)<4 }
                     let index=order.firstIndex(where:{$0.id==item.id})
                     let next=index.flatMap { $0+1 < order.count ? order[$0+1].id : nil }
                     let initial=WindowServer.interfaceWindows(pid:item.pid)
                     // Store before moving so failed click attempts still have a recovery path.
-                    temporary=(item.id,next,true,initial,item.pid,Date())
-                    try await ItemEvents.move(current,nextTo:target,left:true,minimumVisibleX:safeMin)
+                    temporary=(item.id,next,true,foldedIDs.contains(item.id),initial,item.pid,Date())
+                    try await moveItemToGroup(item.id,hidden:false,visibleRestore:true)
                 }
-                var handled=false
-                if current.frame.minX == -1, let element=item.element {
-                    let action=right ? kAXShowMenuAction : kAXPressAction
-                    let result=await Task.detached { AXUIElementSetMessagingTimeout(element,0.3); return AXUIElementPerformAction(element,action as CFString) }.value
-                    handled=result == .success || result == .cannotComplete
-                }
-                if !handled { try await ItemEvents.click(item,right:right) }
+                try await ItemEvents.click(item,right:right)
                 message="已请求打开 \(item.appName) 的原生菜单。"
-            } catch { self.error=error.localizedDescription; showSettings() }
+            } catch {
+                self.error="未能打开 \(item.appName) 的菜单：\(error.localizedDescription)"
+                if ProcessInfo.processInfo.arguments.contains("--diagnostics") { NSLog("ShelfActivate failed %@: %@",item.appName,error.localizedDescription) }
+                showSettings()
+            }
             busy=false
             scheduleRestore()
         }
@@ -342,9 +428,18 @@ import Carbon
     func restoreTemporary() async {
         guard !busy, let context=temporary else { return }
         guard let item=WindowServer.item(context.id) else { temporary=nil; return }
+        // A failed reveal can leave the item in its original hidden group.
+        // Do not trap subsequent actions behind a needless second drag.
+        if context.hidden, let divider=dividerItem(), Layout.isFolded(item.frame,of:divider.frame,hasWindow:item.actualWindowID != nil) {
+            temporary=nil; return
+        }
         guard let target=context.neighbor.flatMap({WindowServer.item($0)}) ?? dividerItem() else { return }
         busy=true
-        do { try await ItemEvents.move(item,nextTo:target,left:context.left); temporary=nil }
+        do {
+            if context.hidden { try await moveItemToGroup(item.id,hidden:true) }
+            else { try await ItemEvents.move(item,nextTo:target,left:context.left) }
+            temporary=nil
+        }
         catch { self.error="临时图标归位失败：\(error.localizedDescription)" }
         busy=false; await refresh()
     }
@@ -352,6 +447,9 @@ import Carbon
         let options=[kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String:true] as CFDictionary
         _=AXIsProcessTrustedWithOptions(options)
         NSWorkspace.shared.open(URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+    func openMenuBarSettings() {
+        NSWorkspace.shared.open(URL(string:"x-apple.systempreferences:com.apple.ControlCenter-Settings.extension")!)
     }
     func requestCapture() { CGRequestScreenCaptureAccess(); NSWorkspace.shared.open(URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!) }
     func showSettings() {
@@ -390,6 +488,7 @@ import Carbon
         guard result == noErr, RegisterEventHotKey(UInt32(kVK_ANSI_B),UInt32(controlKey | optionKey),id,GetApplicationEventTarget(),0,&hotkey) == noErr else { message="快捷键 ⌃⌥B 已被占用，请用菜单栏箭头打开。"; return }
     }
     func cleanup() {
+        pendingRestore?.cancel(); menuBarDropPanel?.orderOut(nil)
         dragReceiver?.stop()
         restoreTask?.cancel(); timer?.invalidate()
         if let monitor { NSEvent.removeMonitor(monitor) }; if let localMonitor { NSEvent.removeMonitor(localMonitor) }

@@ -4,7 +4,7 @@ import AppKit
 import ApplicationServices
 
 enum ShelfError: LocalizedError {
-    case permission, missingItem, eventFailed, moveFailed, busy, noSpace
+    case permission, missingItem, eventFailed, moveFailed, busy, noSpace, unavailableWindow
     var errorDescription: String? {
         switch self {
         case .permission: return "请先在系统设置中允许「折叠栏」使用辅助功能。"
@@ -12,6 +12,7 @@ enum ShelfError: LocalizedError {
         case .eventFailed: return "系统未接收菜单栏操作。请检查辅助功能权限，然后重试。"
         case .moveFailed: return "这个图标未能移动。可以先展开全部，再按住 ⌘ 手动拖到分隔线左侧。"
         case .busy: return "请松开鼠标和修饰键后再操作。"
+        case .unavailableWindow: return "未找到可操作的菜单栏图标。请在系统设置 → 菜单栏 → 允许在菜单栏显示中开启该应用；若已开启，请检查应用自己的菜单栏开关，然后刷新。"
         case .noSpace: return "刘海右侧空间不足，请先减少常驻图标。"
         }
     }
@@ -79,15 +80,20 @@ enum ShelfError: LocalizedError {
         guard AXIsProcessTrusted() else { throw ShelfError.permission }
         guard !CGEventSource.buttonState(.combinedSessionState,button:.left), NSEvent.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty else { throw ShelfError.busy }
         guard let current=WindowServer.item(item.id), let destination=WindowServer.item(target.id) else { throw ShelfError.missingItem }
+        guard current.actualWindowID != nil, destination.actualWindowID != nil else { throw ShelfError.unavailableWindow }
         let oldPointer=CGEvent(source:nil)?.location
         defer { if let oldPointer { CGWarpMouseCursorPosition(oldPointer) } }
-        let destinationBounds=WindowServer.rawItems(includeOwn:true).first(where:{$0.id==destination.actualWindowID})?.frame ?? destination.frame
-        let end=CGPoint(x:left ? destinationBounds.minX-1 : destinationBounds.maxX+1,y:destination.frame.midY)
+        let windows=WindowServer.rawItems(includeOwn:true)
+        let destinationBounds=windows.first(where:{$0.id==destination.actualWindowID})?.frame ?? destination.frame
+        let end=CGPoint(x:left ? destinationBounds.minX-1 : destinationBounds.maxX+1,y:destinationBounds.midY)
         let host=current.hostPID ?? item.pid
         let down=try event(type:.leftMouseDown,item:current,pid:host,point:CGPoint(x:20000,y:20000),command:true)
         let up=try event(type:.leftMouseUp,item:destination,pid:host,point:end)
         do {
             try await EventRelay(event:down,pid:host).run()
+            try await Task.sleep(nanoseconds:60_000_000)
+            let drag=try event(type:.leftMouseDragged,item:current,pid:host,point:end,command:true)
+            try await EventRelay(event:drag,pid:host).run()
             try await Task.sleep(nanoseconds:60_000_000)
             try await EventRelay(event:up,pid:host).run()
         } catch {
@@ -106,8 +112,15 @@ enum ShelfError: LocalizedError {
                     WindowServer.accessibilityItems[index].onScreen=window.onScreen
                 }
             }
-            if let minimumVisibleX, let moved=WindowServer.item(item.id), moved.frame != current.frame, moved.frame.minX>=minimumVisibleX { return }
+            if let minimumVisibleX {
+                if let moved=WindowServer.item(item.id), moved.frame != current.frame, moved.frame.minX>=minimumVisibleX { return }
+                continue
+            }
             if let a=WindowServer.item(item.id), let b=WindowServer.item(target.id), left ? (a.frame.maxX <= b.frame.minX+2) : (a.frame.minX >= b.frame.maxX-2) { return }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--diagnostics") {
+            let raw=WindowServer.rawItems(includeOwn:true)
+            NSLog("ShelfMove failed %@ start=%@ end=%@ AX=%@ raw=%@ targetAX=%@ targetRaw=%@ sourceWindow=%u targetWindow=%u",current.appName,NSStringFromRect(current.frame),NSStringFromPoint(end),NSStringFromRect(WindowServer.item(item.id)?.frame ?? .zero),NSStringFromRect(raw.first(where:{$0.id==current.actualWindowID})?.frame ?? .zero),NSStringFromRect(WindowServer.item(target.id)?.frame ?? .zero),NSStringFromRect(raw.first(where:{$0.id==destination.actualWindowID})?.frame ?? .zero),current.actualWindowID ?? 0,destination.actualWindowID ?? 0)
         }
         throw ShelfError.moveFailed
     }
@@ -116,11 +129,18 @@ enum ShelfError: LocalizedError {
         // The host continues reflowing after the drag's first frame change.
         try await Task.sleep(nanoseconds:250_000_000)
         guard var current=WindowServer.item(item.id) else { throw ShelfError.missingItem }
-        if let windowID=current.actualWindowID, let window=WindowServer.rawItems(includeOwn:true).first(where:{$0.id==windowID}) { current.frame=window.frame }
+        if let windowID=current.actualWindowID, let window=WindowServer.rawItems(includeOwn:true).first(where:{$0.id==windowID}) { current.frame=window.frame; current.onScreen=window.onScreen }
         else if let element=current.element, let frame=await Task.detached(operation:{AXInventory.frame(element)}).value { current.frame=frame }
+        guard current.actualWindowID != nil else { throw ShelfError.unavailableWindow }
         let point=CGPoint(x:current.frame.midX,y:current.frame.midY)
         if ProcessInfo.processInfo.arguments.contains("--diagnostics") { NSLog("ShelfClick %@ point=%@ host=%d window=%u",item.appName,NSStringFromPoint(point),current.hostPID ?? item.pid,current.actualWindowID ?? current.id) }
-        guard point.x>=0, current.frame.minX != -1 else { throw ShelfError.noSpace }
+        let visible=NSScreen.screens.contains { screen in
+            let display=(screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+            let bounds=CGDisplayBounds(display)
+            let left=screen.auxiliaryTopRightArea?.minX ?? bounds.minX
+            return Layout.itemFitsMenuBar(current.frame,display:bounds,minimumX:left)
+        }
+        guard visible else { throw ShelfError.noSpace }
         let oldPointer=CGEvent(source:nil)?.location
         CGWarpMouseCursorPosition(point)
         defer { if let oldPointer { CGWarpMouseCursorPosition(oldPointer) } }

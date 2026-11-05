@@ -6,6 +6,15 @@ enum Layout {
         CGPoint(x: max(visible.minX + 8, min(anchor.maxX - size.width, visible.maxX - size.width - 8)), y: top - size.height - 8)
     }
     static func isLeft(_ item: CGRect, of divider: CGRect) -> Bool { item.midX < divider.minX }
+    static func isFolded(_ item:CGRect, of divider:CGRect, hasWindow:Bool)->Bool {
+        hasWindow && abs(item.midY-divider.midY)<4 && isLeft(item,of:divider)
+    }
+    // Hosted status windows can be 33 pt tall on a notched display even when
+    // NSStatusBar.thickness reports 24. Inventory only accepts windows <=64 pt.
+    static func itemFitsMenuBar(_ item:CGRect, display:CGRect, minimumX:CGFloat)->Bool {
+        item.width>0 && item.height>0 && item.minX>=minimumX && item.maxX<=display.maxX &&
+            item.minY>=display.minY && item.maxY<=display.minY+64
+    }
     static func entryFits(_ item: CGRect, in safeArea: CGRect) -> Bool {
         item.width > 0 && item.height > 0 && safeArea.insetBy(dx:4,dy:0).contains(item)
     }

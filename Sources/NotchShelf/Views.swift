@@ -12,6 +12,10 @@ struct MaterialView: NSViewRepresentable {
 final class ItemButton: NSButton, NSDraggingSource {
     static let shelfType=NSPasteboard.PasteboardType("local.eugene.NotchShelf.shelf-order")
     var itemKey=""
+    var requiresCommand=true
+    var onRestore: (()->Void)?
+    var canRestore=false
+    var onContextState: ((Bool)->Void)?
     var onClick: ((Bool)->Void)?
     var onMove: ((String,String,Bool)->Bool)?
     var onDragState: ((Bool)->Void)?
@@ -21,7 +25,7 @@ final class ItemButton: NSButton, NSDraggingSource {
     private var scrollTimer: Timer?
     override func mouseDown(with event:NSEvent) {
         guard isEnabled else { return }
-        if event.modifierFlags.contains(.command) { commandDown=event; return }
+        if !requiresCommand || event.modifierFlags.contains(.command) { commandDown=event; return }
         commandDown=nil; super.mouseDown(with:event)
     }
     override func mouseDragged(with event:NSEvent) {
@@ -37,7 +41,12 @@ final class ItemButton: NSButton, NSDraggingSource {
         scrollTimer=timer; RunLoop.main.add(timer,forMode:.common)
     }
     override func mouseUp(with event:NSEvent) {
-        if commandDown != nil || dragging { commandDown=nil; return }
+        if let start=commandDown {
+            commandDown=nil
+            if !dragging && !start.modifierFlags.contains(.command), bounds.contains(convert(event.locationInWindow,from:nil)) { onClick?(false) }
+            return
+        }
+        if dragging { return }
         super.mouseUp(with:event)
     }
     func draggingSession(_ session:NSDraggingSession, sourceOperationMaskFor context:NSDraggingContext)->NSDragOperation {
@@ -91,7 +100,24 @@ final class ItemButton: NSButton, NSDraggingSource {
         let x=max(0,min(visible.minX+step,document.bounds.width-visible.width))
         clip.scroll(to:NSPoint(x:x,y:visible.minY)); scroll.reflectScrolledClipView(clip)
     }
-    override func rightMouseUp(with event:NSEvent) { onClick?(true) }
+    override func rightMouseDown(with event:NSEvent) {
+        onContextState?(true)
+        defer { onContextState?(false) }
+        let menu=NSMenu(); menu.autoenablesItems=false
+        let restore=NSMenuItem(title:"恢复到菜单栏",action:#selector(restoreItem),keyEquivalent:"")
+        restore.target=self; restore.isEnabled=canRestore && isEnabled; menu.addItem(restore)
+        if !canRestore {
+            let reason=NSMenuItem(title:"此图标暂无可移动的菜单栏窗口",action:nil,keyEquivalent:"")
+            reason.isEnabled=false; menu.addItem(reason)
+        }
+        menu.addItem(.separator())
+        let original=NSMenuItem(title:"打开软件原有右键菜单",action:#selector(originalMenu),keyEquivalent:"")
+        original.target=self; original.isEnabled=isEnabled; menu.addItem(original)
+        NSMenu.popUpContextMenu(menu,with:event,for:self)
+    }
+    override func rightMouseUp(with event:NSEvent) {}
+    @objc private func restoreItem() { let action=onRestore; DispatchQueue.main.async { action?() } }
+    @objc private func originalMenu() { let action=onClick; DispatchQueue.main.async { action?(true) } }
     @objc func pressed() { onClick?(false) }
     override func resetCursorRects() { addCursorRect(bounds,cursor:.pointingHand) }
 }
@@ -99,6 +125,10 @@ struct MenuItemButton: NSViewRepresentable {
     var item:BarItem
     var image:NSImage
     var enabled:Bool
+    var requiresCommand:Bool
+    var canRestore:Bool
+    var restore:()->Void
+    var contextState:(Bool)->Void
     var click:(Bool)->Void
     var move:(String,String,Bool)->Bool
     var dragState:(Bool)->Void
@@ -108,8 +138,9 @@ struct MenuItemButton: NSViewRepresentable {
         button.setButtonType(.momentaryChange); button.registerForDraggedTypes([ItemButton.shelfType]); return button
     }
     func updateNSView(_ button:ItemButton,context:Context) {
-        button.image=image; button.itemKey=item.key
-        button.toolTip="\(item.name) · ⌘拖动调整顺序"; button.setAccessibilityLabel(item.name)
+        button.image=image; button.contentTintColor=image.isTemplate ? .labelColor : nil; button.itemKey=item.key
+        button.requiresCommand=requiresCommand; button.canRestore=canRestore; button.onRestore=restore; button.onContextState=contextState
+        button.toolTip="\(item.name) · \(requiresCommand ? "⌘拖动" : "拖动")排序或拖回顶部 · 右键管理"; button.setAccessibilityLabel(item.name)
         button.isEnabled=enabled; button.onClick=click
         button.onMove=move; button.onDragState=dragState
     }
@@ -117,6 +148,7 @@ struct MenuItemButton: NSViewRepresentable {
 struct ShelfView: View {
     @ObservedObject var model:ShelfModel
     var body:some View {
+        VStack(alignment:.leading,spacing:6) {
         HStack(spacing:8) {
             if model.shelfItems.isEmpty {
                 VStack(alignment:.leading,spacing:4) {
@@ -128,7 +160,9 @@ struct ShelfView: View {
                 ScrollView(.horizontal,showsIndicators:false) {
                     HStack(spacing:0) {
                         ForEach(model.shelfItems) { item in
-                            MenuItemButton(item:item,image:model.cache.images[item.id] ?? item.fallbackImage,enabled:!model.busy,
+                            MenuItemButton(item:item,image:model.shelfImage(item),enabled:!model.busy,
+                                           requiresCommand:model.dragRequiresCommand,canRestore:model.canRestoreToMenuBar(item),
+                                           restore:{model.restoreToMenuBar(item.key)},contextState:{model.shelfMenuOpen=$0},
                                            click:{right in model.activate(item,right:right)},
                                            move:{source,target,after in model.moveShelfItem(source,to:target,after:after)},
                                            dragState:{model.setShelfDragging($0)})
@@ -140,6 +174,12 @@ struct ShelfView: View {
             Divider().frame(height:24)
             Button { model.showSettings() } label: { Image(systemName:"slider.horizontal.3").frame(width:24,height:28) }
                 .buttonStyle(.plain).help("管理图标与外观").accessibilityLabel("管理图标与外观")
+        }
+        if let error=model.error {
+            HStack { Text(error).font(.system(size:11)).foregroundStyle(.orange).lineLimit(2)
+                Button("关闭") { model.error=nil; model.redrawPanel() }.buttonStyle(.plain)
+            }
+        }
         }.padding(12).background(MaterialView()).clipShape(RoundedRectangle(cornerRadius:14))
         .overlay(RoundedRectangle(cornerRadius:14).strokeBorder(.primary.opacity(0.12),lineWidth:0.5))
     }
@@ -206,6 +246,10 @@ struct SettingsView: View {
             }
             Text("按住 ⌘，将顶部图标拖到双箭头上，松开鼠标和 ⌘ 即可收纳。也可用下方菜单选择。系统控制图标保留常驻。")
                 .font(.system(size:12)).foregroundStyle(.secondary)
+            if model.items.contains(where:{$0.actualWindowID == nil}) {
+                Text("未显示的图标可能已被系统关闭，不属于收纳栏。请在系统设置 → 菜单栏中开启该应用的「允许在菜单栏显示」，再回到这里收纳。")
+                    .font(.system(size:12)).foregroundStyle(.secondary)
+            }
             if model.items.isEmpty {
                 ContentUnavailableView("尚未读取到菜单栏图标",systemImage:"menubar.rectangle",description:Text("确认顶部菜单栏已显示，然后点击刷新。"))
             }
@@ -221,9 +265,9 @@ struct SettingsView: View {
                         Button { model.reorder(item,delta:-1) } label: { Image(systemName:"chevron.left") }.help("在横条中前移").accessibilityLabel("\(item.appName) 在横条中前移")
                         Button { model.reorder(item,delta:1) } label: { Image(systemName:"chevron.right") }.help("在横条中后移").accessibilityLabel("\(item.appName) 在横条中后移")
                     }
-                    if item.frame.minX == -1 {
-                        Text("系统已收起").font(.system(size:11)).foregroundStyle(.secondary)
-                        Button("打开菜单") { model.activate(item,right:false) }.disabled(model.busy)
+                    if item.actualWindowID == nil {
+                        Text("未在系统菜单栏显示").font(.system(size:11)).foregroundStyle(.secondary)
+                        Button("系统菜单栏设置…") { model.openMenuBarSettings() }.disabled(model.busy)
                     } else {
                         Picker("\(item.appName) 显示位置",selection:Binding(get:{model.foldedIDs.contains(item.id)},set:{model.changeGroup(item,hidden:$0)})) {
                             Text("菜单栏常驻").tag(false); Text("收纳栏内").tag(true)
@@ -237,7 +281,14 @@ struct SettingsView: View {
     var appearanceSettings:some View {
         VStack(alignment:.leading,spacing:22) {
             Text("轻巧横条").font(.headline)
-            Text("按住 ⌘ 在横条中拖动图标即可排序，松开后自动保存。图标多时可横向滚动，拖到边缘可继续滚动；悬停显示名称。")
+            Picker("图标样式",selection:$model.iconStyle) {
+                Text("单色透明").tag("monochrome")
+                Text("彩色应用图标").tag("color")
+            }.pickerStyle(.segmented)
+            Text("单色随系统深浅色适配；开启图标采集后优先使用原菜单栏图案，未开启时使用应用图标生成的单色图形。")
+                .font(.system(size:11)).foregroundStyle(.secondary)
+            Toggle("拖拽时需要按住 ⌘",isOn:$model.dragRequiresCommand)
+            Text("关闭后，在收纳栏内直接按住鼠标即可排序或拖回顶部。顶部原生菜单栏图标仍需按住 ⌘ 移动。图标右键可直接恢复到菜单栏。")
                 .font(.system(size:12)).foregroundStyle(.secondary)
             HStack {
                 Text("图标间距"); Slider(value:$model.spacing,in:4...16,step:2); Text("\(Int(model.spacing)) pt").monospacedDigit().frame(width:44)
@@ -257,13 +308,13 @@ struct SettingsView: View {
                 .font(.system(size:12)).foregroundStyle(.secondary)
             Divider()
             Text("使用方法").font(.headline)
-            Text("1. 按住 ⌘，将图标拖到顶部双箭头上。\n2. 看到「松开以收纳」后，松开鼠标和 ⌘。\n3. 图标自动收纳；点击双箭头展开横条。\n4. 也可在图标管理中选择分组；左键打开原生菜单，右键执行原有右键操作。")
+            Text("1. 按住 ⌘，将图标拖到顶部双箭头上。\n2. 看到「松开以收纳」后，松开鼠标和 ⌘。\n3. 图标自动收纳；点击双箭头展开横条。\n4. 也可在图标管理中选择分组；左键打开原生菜单，右键可恢复到菜单栏或打开软件原有右键菜单。")
                 .font(.system(size:12)).lineSpacing(6)
             Text("退出时会移除分隔线并恢复顶部显示。不要与 iBar、Ice、Bartender 等同时管理菜单栏。")
                 .font(.system(size:12)).foregroundStyle(.secondary)
             Button("归位临时图标") { Task { await model.restoreTemporary() } }
             Divider()
-            Text("折叠栏 0.3.0 · 本地测试版\n菜单栏事件路由参考 Ice，按 GPL-3.0 分发；包含完整源码。")
+            Text("折叠栏 0.4.0 · 本地测试版\n菜单栏事件路由参考 Ice，按 GPL-3.0 分发；包含完整源码。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
         }
     }
