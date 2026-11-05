@@ -1,5 +1,17 @@
 # 更新记录
 
+## v0.4.0 · 拖回菜单栏与外观切换 / Restore icons and choose an appearance
+
+2026-11-05
+
+- 横条图标可按住 ⌘ 拖回顶部提示区恢复；右键菜单可直接恢复或请求原有右键操作。
+- 新增直接鼠标拖动选项，默认保留 ⌘；单色透明为默认外观，可切换彩色应用图标。
+- 不再把系统关闭显示的占位图标误列入收纳栏；新增系统菜单栏设置入口，区分窗口不可用与空间不足。
+- 修复原生拖动事件、可见位置和 33 pt 状态窗口校验，改进临时图标归位。
+- 37 项自动检查、Debug / Release 构建和签名校验通过；用户确认本版使用正常。完整兼容范围见 README。
+
+Command-drag icons back to the menu bar or restore them from the shelf context menu. Adds optional mouse-only dragging and adaptive monochrome / colorful appearances. Fixes disabled-icon classification, misleading space errors, native drag events, 33 pt status-window validation and temporary restoration. All 37 automated checks pass; the user confirmed normal operation. See README for compatibility limits.
+
 ## v0.3.0 · ⌘ 拖动排序 / Command-drag reordering
 
 - 展开横条后，按住 ⌘ 拖动图标到另一图标前后；提供插入位置提示，松开自动保存。
